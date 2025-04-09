@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enhanced Drag to Delete</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: linear-gradient(145deg, #5902fa, #f50de9);
+      min-height: 100vh;
+    }
+
+    h2 {
+      text-align: center;
+      color: #fff;
+      margin-bottom: 20px;
+    }
+
+    .custom-upload {
+      display: block;
+      width: 100%;
+      max-width: 400px;
+      margin: 0 auto 10px;
+      padding: 12px;
+      background: #007bff;
+      color: white;
+      text-align: center;
+      font-size: 16px;
+      border-radius: 8px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+
+    .custom-upload:hover {
+      background: #0056b3;
+    }
+
+    .images-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .image-item {
+      position: relative;
+      background: white;
+      border: 2px solid #ddd;
+      border-radius: 10px;
+      overflow: hidden;
+      touch-action: none;
+      transition: transform 0.2s, opacity 0.3s ease;
+    }
+
+    .image-item.dragging {
+      opacity: 0.6;
+      transform: scale(0.95);
+      border-color: #007bff;
+    }
+
+    .image-item img {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      display: block;
+      cursor: pointer;
+    }
+
+    #deleteZone {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 80px;
+      height: 80px;
+      background-color: #ff4d4d;
+      color: white;
+      font-size: 14px;
+      text-align: center;
+      line-height: 80px;
+      border-radius: 50%;
+      box-shadow: 0 0 15px rgba(0, 0, 0, 0.3);
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s, background 0.3s;
+    }
+
+    #deleteZone.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    #deleteZone.hovered {
+      background-color: #cc0000;
+    }
+
+    #fullscreenModal {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      z-index: 9999;
+    }
+
+    #fullscreenModal img {
+      max-width: 90vw;
+      max-height: 85vh;
+      border-radius: 12px;
+      box-shadow: 0 0 20px rgba(255,255,255,0.3);
+      animation: zoomIn 0.3s ease;
+    }
+
+    #fullscreenModal span {
+      color: #fff;
+      margin-top: 10px;
+      font-size: 16px;
+      user-select: none;
+    }
+
+    .close-icon {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      font-size: 26px;
+      color: white;
+      cursor: pointer;
+    }
+
+    @keyframes zoomIn {
+      from { transform: scale(0.8); opacity: 0; }
+      to   { transform: scale(1); opacity: 1; }
+    }
+
+    @media (min-width: 768px) {
+      .images-container {
+        grid-template-columns: repeat(6, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Upload & Drag to Delete</h2>
+  <a href="#" class="custom-upload" onclick="document.getElementById('imageInput').click()">
+    <input type="file" id="imageInput" accept="image/*" hidden onchange="addImage()">
+    <span>Select Image</span>
+  </a>
+
+  <div class="images-container" id="imageList"></div>
+  <div id="deleteZone">🗑</div>
+
+  <div id="fullscreenModal" onclick="closeModal(event)">
+    <div class="close-icon" onclick="closeModal(event)">✖</div>
+    <img id="fullscreenImage" src="" alt="Full Image">
+    <span id="imageCounter"></span>
+  </div>
+
+  <script>
+    class Node {
+      constructor(imageData) {
+        this.data = imageData;
+        this.link = null;
+      }
+    }
+
+    class LinkedList {
+      constructor() {
+        this.head = null;
+      }
+
+      append(data) {
+        const newNode = new Node(data);
+        if (!this.head) this.head = newNode;
+        else {
+          let current = this.head;
+          while (current.link) current = current.link;
+          current.link = newNode;
+        }
+      }
+
+      deleteByIndex(index) {
+        if (index === 0) {
+          this.head = this.head?.link ?? null;
+          return;
+        }
+        let current = this.head, prev = null, count = 0;
+        while (current && count < index) {
+          prev = current;
+          current = current.link;
+          count++;
+        }
+        if (prev && current) prev.link = current.link;
+      }
+
+      toArray() {
+        const arr = [];
+        let current = this.head;
+        while (current) {
+          arr.push(current.data);
+          current = current.link;
+        }
+        return arr;
+      }
+
+      fromArray(arr) {
+        this.head = null;
+        arr.forEach(data => this.append(data));
+      }
+    }
+
+    const imageList = new LinkedList();
+    let draggedIndex = null;
+    let currentIndex = 0;
+
+    window.onload = () => {
+      const saved = JSON.parse(localStorage.getItem("imageLinkedList")) || [];
+      imageList.fromArray(saved);
+      displayImages();
+    };
+
+    function addImage() {
+      const input = document.getElementById("imageInput");
+      const file = input.files[0];
+      if (file && file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          imageList.append(e.target.result);
+          saveToLocal();
+          displayImages();
+        };
+        reader.readAsDataURL(file);
+        input.value = "";
+      } else alert("Please select a valid image.");
+    }
+
+    function saveToLocal() {
+      localStorage.setItem("imageLinkedList", JSON.stringify(imageList.toArray()));
+    }
+
+    function displayImages() {
+      const container = document.getElementById("imageList");
+      container.innerHTML = "";
+      const images = imageList.toArray();
+
+      images.forEach((src, index) => {
+        const item = document.createElement("div");
+        item.className = "image-item";
+        const img = document.createElement("img");
+        img.src = src;
+        img.addEventListener("click", () => showFullScreenImage(index));
+        item.appendChild(img);
+        container.appendChild(item);
+
+        let startY = 0, currentY = 0;
+        item.addEventListener("touchstart", (e) => {
+          draggedIndex = index;
+          startY = e.touches[0].clientY;
+          deleteZone.classList.add("active");
+        });
+        item.addEventListener("touchend", () => {
+          clearTimeout(deleteTimeout);
+          deleteTimeout = null;
+          deleteZone.classList.remove("active", "hovered");
+        });
+
+        item.addEventListener("touchmove", (e) => {
+          const touch = e.touches[0];
+          const dzRect = deleteZone.getBoundingClientRect();
+          if (
+            touch.clientX >= dzRect.left &&
+            touch.clientX <= dzRect.right &&
+            touch.clientY >= dzRect.top &&
+            touch.clientY <= dzRect.bottom
+          ) {
+            if (!deleteTimeout && draggedIndex !== null) {
+              deleteTimeout = setTimeout(() => {
+                deleteImage(draggedIndex);
+                draggedIndex = null;
+                deleteZone.classList.remove("active", "hovered");
+              }, 500);
+              deleteZone.classList.add("hovered");
+            }
+          } else {
+            clearTimeout(deleteTimeout);
+            deleteTimeout = null;
+            deleteZone.classList.remove("hovered");
+          }
+        });
+
+        item.setAttribute("draggable", "true");
+        item.addEventListener("dragstart", (e) => {
+          draggedIndex = index;
+          item.classList.add("dragging");
+          deleteZone.classList.add("active");
+        });
+
+        item.addEventListener("dragend", () => {
+          item.classList.remove("dragging");
+          deleteZone.classList.remove("active", "hovered");
+          clearTimeout(deleteTimeout);
+          deleteTimeout = null;
+        });
+      });
+    }
+
+    function deleteImage(index) {
+      imageList.deleteByIndex(index);
+      saveToLocal();
+      displayImages();
+    }
+
+    const deleteZone = document.getElementById("deleteZone");
+    let deleteTimeout = null;
+
+    deleteZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      deleteZone.classList.add("hovered");
+      if (!deleteTimeout && draggedIndex !== null) {
+        deleteTimeout = setTimeout(() => {
+          deleteImage(draggedIndex);
+          draggedIndex = null;
+          deleteZone.classList.remove("active", "hovered");
+        }, 500);
+      }
+    });
+
+    deleteZone.addEventListener("dragleave", () => {
+      deleteZone.classList.remove("hovered");
+      clearTimeout(deleteTimeout);
+      deleteTimeout = null;
+    });
+
+    deleteZone.addEventListener("drop", () => {
+      clearTimeout(deleteTimeout);
+      deleteTimeout = null;
+      deleteZone.classList.remove("hovered");
+    });
+
+    const fullscreenModal = document.getElementById("fullscreenModal");
+    const fullscreenImage = document.getElementById("fullscreenImage");
+    const imageCounter = document.getElementById("imageCounter");
+
+    function showFullScreenImage(index) {
+      const images = imageList.toArray();
+      currentIndex = index;
+      fullscreenImage.src = images[currentIndex];
+      imageCounter.textContent = `Image ${currentIndex + 1} of ${images.length}`;
+      fullscreenModal.style.display = "flex";
+    }
+
+    function closeModal(e) {
+      if (e.target.id === "fullscreenModal" || e.target.classList.contains("close-icon")) {
+        fullscreenModal.style.display = "none";
+      }
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeModal({ target: { id: "fullscreenModal" } });
+      if (e.key === "ArrowRight") swipeNext();
+      if (e.key === "ArrowLeft") swipePrev();
+    });
+
+    let touchStartX = 0;
+    let touchEndX = 0;
+
+    fullscreenModal.addEventListener("touchstart", (e) => {
+      touchStartX = e.changedTouches[0].screenX;
+    });
+
+    fullscreenModal.addEventListener("touchend", (e) => {
+      touchEndX = e.changedTouches[0].screenX;
+      handleSwipe();
+    });
+
+    function handleSwipe() {
+      const diff = touchEndX - touchStartX;
+      if (Math.abs(diff) > 40) {
+        if (diff < 0) swipeNext();
+        else swipePrev();
+      }
+    }
+
+    function swipeNext() {
+      const images = imageList.toArray();
+      if (currentIndex < images.length - 1) {
+        currentIndex++;
+        fullscreenImage.src = images[currentIndex];
+        imageCounter.textContent = `Image ${currentIndex + 1} of ${images.length}`;
+      }
+    }
+
+    function swipePrev() {
+      const images = imageList.toArray();
+      if (currentIndex > 0) {
+        currentIndex--;
+        fullscreenImage.src = images[currentIndex];
+        imageCounter.textContent = `Image ${currentIndex + 1} of ${images.length}`;
+      }
+    }
+  </script>
+</body>
+</html>
